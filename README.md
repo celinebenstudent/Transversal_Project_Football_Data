@@ -28,7 +28,5 @@ L’objectif est de produire des indicateurs clairs, exploitables et rapides pou
 - Matplotlib / Seaborn  
 - Jupyter Notebook  
 
----
-
-## 📁 Structure du projet  
+--- 
 
