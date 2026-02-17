@@ -1,36 +1,44 @@
 import os
-import subprocess
 import sys
-import shutil
+import subprocess
+from pathlib import Path
 
 # ===============================
-# Chemin vers l'exécutable Python 3.11
+# Vérification version Python
 # ===============================
-python_executable = sys.executable
-
-# Vérifier si python3.11 est disponible
-if shutil.which(python_executable) is None:
-    print("Erreur : Python 3.11 n'est pas trouvé sur le PATH.")
-    print("Veuillez installer Python 3.11 et réessayer.")
+if sys.version_info < (3, 11):
+    print("Erreur : Python 3.11 minimum requis.")
     sys.exit(1)
 
 # ===============================
-# Créer l'environnement virtuel .venv
+# Création de l'environnement virtuel
 # ===============================
-venv_dir = ".venv"
-if not os.path.exists(venv_dir):
-    subprocess.run([python_executable, "-m", "venv", venv_dir], check=True)
-    print(f"Environnement virtuel '.venv' créé avec Python 3.11")
+venv_path = Path(".venv")
+
+if not venv_path.exists():
+    subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True)
+    print("✅ Environnement virtuel créé")
 else:
-    print(f"Environnement virtuel '.venv' existe déjà")
+    print("ℹ️ Environnement virtuel déjà existant")
 
 # ===============================
-# Installer les dépendances
+# Détection pip
 # ===============================
-pip_executable = os.path.join(venv_dir, "Scripts", "pip.exe") if os.name == "nt" else os.path.join(venv_dir, "bin", "pip")
-
-if os.path.exists("requirements.txt"):
-    subprocess.run([pip_executable, "install", "-r", "requirements.txt"], check=True)
-    print("Dépendances installées depuis requirements.txt")
+if os.name == "nt":
+    pip_path = venv_path / "Scripts" / "pip.exe"
 else:
-    print("Aucun fichier requirements.txt trouvé")
+    pip_path = venv_path / "bin" / "pip"
+
+# ===============================
+# Mise à jour pip + installation
+# ===============================
+subprocess.run([str(pip_path), "install", "--upgrade", "pip"], check=True)
+
+requirements = Path("requirements.txt")
+
+if requirements.exists():
+    subprocess.run([str(pip_path), "install", "-r", str(requirements)], check=True)
+    print("✅ Dépendances installées")
+else:
+    print("⚠️ Aucun requirements.txt trouvé")
+
