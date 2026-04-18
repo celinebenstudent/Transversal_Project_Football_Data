@@ -1,0 +1,607 @@
+---
+title: "Football Performance Monitoring — R Analysis"
+subtitle: "Master 2SIA — Python-R-Git Project"
+author: "Celine BENDEKOUM"
+date: "02/04/2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    code_folding: show
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 9,
+  fig.height = 5,
+  fig.align  = "center"
+)
+```
+
+# Required libraries
+
+```{r libraries}
+# Data manipulation
+library(readr)
+library(dplyr)
+library(tidyr)
+
+# Visualization
+library(ggplot2)
+library(scales)
+
+# Statistical tests
+library(coin)       # non-parametric tests
+library(rstatix)    # tidy statistical summaries
+
+# Table display
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# Scientific question
+
+A football club wants to **monitor the physical load** of its players
+across matches and training sessions using GPS/IMU data.
+
+The R analysis focuses on three complementary questions:
+
+1. **Is the physical load significantly different between matches and
+   training sessions?** (per KPI, per position)
+2. **How does load evolve over time?** (trends, peaks, overload
+   detection)
+3. **Can a simple linear model predict distance from speed/acceleration
+   variables?** (and are the assumptions verified?)
+
+---
+
+# Data
+
+## Loading
+
+The raw file is `data/data/summary.csv`. All paths are **relative** so
+the project works on any computer.
+
+```{r load-data}
+raw <- read_csv(
+  "data/data/summary.csv",
+  na      = c("NA", "NaN", "N/A", ""),
+  show_col_types = FALSE
+)
+
+# Standardise column names and select variables of interest
+df_raw <- raw |>
+  rename(
+    sensor        = Sensor,
+    last_name     = last_name,
+    first_name    = first_name,
+    session_ts    = date,
+    session_type  = type,
+    position      = position,
+    distance_km   = feature_distance,
+    avg_speed     = feature_avg_speed,
+    max_speed     = feature_max_speed,
+    max_acc       = feature_max_acc,
+    d_0_5         = feature_d_speed_0_5,
+    d_5_10        = feature_d_speed_5_10,
+    d_10_15       = feature_d_speed_10_15,
+    d_15_21       = feature_d_speed_15_21,
+    d_21_24       = feature_d_speed_21_24,
+    d_24_30       = feature_d_speed_24_30,
+    d_over30      = feature_d_speed_over30,
+    acc_3mss      = feature_acc_3mss,
+    dec_3mss      = feature_dec_3mss
+  ) |>
+  mutate(
+    session_ts = as.POSIXct(session_ts),
+    session_date = as.Date(session_ts)
+  )
+
+glimpse(df_raw)
+```
+
+## Quality control & cleaning
+
+We apply the same rules as the Python pipeline so results are
+comparable.
+
+```{r cleaning}
+# Constants (same as Python)
+MIN_MATCH_DIST <- 0.5
+MAX_MATCH_DIST <- 20.0
+MAX_MAX_SPEED  <- 40.0
+ZONE_TOL       <- 1.15
+
+df <- df_raw |>
+  filter(
+    session_type %in% c("game", "practice"),
+    !is.na(session_ts),
+    !is.na(sensor)
+  ) |>
+  mutate(
+    zones_sum = rowSums(
+      across(c(d_0_5, d_5_10, d_10_15, d_15_21, d_21_24, d_24_30, d_over30)),
+      na.rm = TRUE
+    )
+  ) |>
+  filter(
+    # No negative values
+    is.na(distance_km) | distance_km >= 0,
+    is.na(max_speed)   | max_speed   >= 0,
+    is.na(acc_3mss)    | acc_3mss    >= 0,
+    is.na(dec_3mss)    | dec_3mss    >= 0,
+    # Zone coherence
+    is.na(distance_km) | zones_sum <= distance_km * ZONE_TOL,
+    # Match-specific rules
+    session_type != "game" | (
+      distance_km >= MIN_MATCH_DIST &
+      distance_km <= MAX_MATCH_DIST &
+      (is.na(max_speed) | max_speed <= MAX_MAX_SPEED)
+    )
+  )
+
+# Summary of what remains
+df |>
+  count(session_type, name = "n_rows") |>
+  left_join(
+    df |> group_by(session_type) |> summarise(n_players = n_distinct(sensor)),
+    by = "session_type"
+  ) |>
+  kable(caption = "Rows and unique players after cleaning") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+---
+
+# Data processing
+
+## Derived KPI
+
+We compute the **High Intensity Distance (HID)** — distance run above
+15 km/h — which is the main indicator of physical exertion in football.
+
+```{r kpi}
+df <- df |>
+  mutate(
+    HID_km = rowSums(
+      across(c(d_15_21, d_21_24, d_24_30, d_over30)),
+      na.rm = TRUE
+    ),
+    HID_pct = if_else(distance_km > 0, HID_km / distance_km * 100, NA_real_),
+    sprint_km = d_over30
+  )
+```
+
+## Descriptive statistics
+
+```{r descriptives}
+desc <- df |>
+  group_by(session_type) |>
+  summarise(
+    n           = n(),
+    dist_mean   = mean(distance_km, na.rm = TRUE),
+    dist_sd     = sd(distance_km, na.rm = TRUE),
+    dist_median = median(distance_km, na.rm = TRUE),
+    HID_mean    = mean(HID_km, na.rm = TRUE),
+    HID_sd      = sd(HID_km, na.rm = TRUE),
+    vmax_mean   = mean(max_speed, na.rm = TRUE),
+    vmax_sd     = sd(max_speed, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+desc |>
+  kable(digits = 2, caption = "Descriptive statistics by session type") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+---
+
+# Data visualisation
+
+## Distance distribution — game vs practice
+
+```{r boxplot-distance, fig.height=5}
+ggplot(df, aes(x = session_type, y = distance_km, fill = session_type)) +
+  geom_violin(alpha = 0.4, trim = TRUE) +
+  geom_boxplot(width = 0.2, outlier.size = 1.2, outlier.alpha = 0.5) +
+  scale_fill_manual(values = c("game" = "#E74C3C", "practice" = "#3498DB")) +
+  labs(
+    title   = "Distance distribution: match vs training",
+    x       = NULL,
+    y       = "Distance (km)",
+    fill    = "Session type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+## Distribution by position
+
+```{r boxplot-position, fig.height=6}
+# Keep positions with at least 20 observations
+valid_pos <- df |>
+  count(position) |>
+  filter(n >= 20) |>
+  pull(position)
+
+df |>
+  filter(position %in% valid_pos) |>
+  ggplot(aes(x = reorder(position, distance_km, median),
+             y = distance_km,
+             fill = session_type)) +
+  geom_boxplot(outlier.size = 0.8, outlier.alpha = 0.4, position = position_dodge(0.75)) +
+  scale_fill_manual(values = c("game" = "#E74C3C", "practice" = "#3498DB")) +
+  labs(
+    title  = "Distance by position and session type",
+    x      = "Position",
+    y      = "Distance (km)",
+    fill   = "Session type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+## Speed zone profiles
+
+```{r speed-zones, fig.height=5}
+zones_long <- df |>
+  filter(!is.na(session_type)) |>
+  group_by(session_type) |>
+  summarise(across(c(d_0_5, d_5_10, d_10_15, d_15_21, d_21_24, d_24_30, d_over30),
+                   \(x) mean(x, na.rm = TRUE))) |>
+  pivot_longer(-session_type, names_to = "zone", values_to = "mean_km") |>
+  mutate(zone = factor(zone,
+    levels = c("d_0_5","d_5_10","d_10_15","d_15_21","d_21_24","d_24_30","d_over30"),
+    labels = c("0–5","5–10","10–15","15–21","21–24","24–30",">30")))
+
+ggplot(zones_long, aes(x = zone, y = mean_km, fill = session_type)) +
+  geom_col(position = "dodge", colour = "white", linewidth = 0.3) +
+  scale_fill_manual(values = c("game" = "#E74C3C", "practice" = "#3498DB")) +
+  labs(
+    title  = "Mean distance per speed zone",
+    x      = "Speed zone (km/h)",
+    y      = "Mean distance (km)",
+    fill   = "Session type"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+## Load evolution over time (team average)
+
+```{r time-series, fig.height=5}
+ts_data <- df |>
+  group_by(session_date, session_type) |>
+  summarise(
+    mean_dist = mean(distance_km, na.rm = TRUE),
+    mean_HID  = mean(HID_km,      na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+ggplot(ts_data, aes(x = session_date, y = mean_dist, colour = session_type)) +
+  geom_line(linewidth = 0.8, alpha = 0.7) +
+  geom_point(size = 1.5, alpha = 0.8) +
+  geom_smooth(method = "loess", se = TRUE, linewidth = 1.2, alpha = 0.15) +
+  scale_colour_manual(values = c("game" = "#E74C3C", "practice" = "#3498DB")) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "2 months") +
+  labs(
+    title   = "Team average distance over the season",
+    x       = NULL,
+    y       = "Mean distance (km)",
+    colour  = "Session type",
+    caption = "Smoothing: LOESS — shaded area = 95 % CI"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+## QQ-plots — normality check
+
+Before choosing between parametric and non-parametric tests we
+check the normality of the distance variable.
+
+```{r qqplot, fig.height=5}
+par(mfrow = c(1, 2))
+
+dist_game     <- na.omit(df$distance_km[df$session_type == "game"])
+dist_practice <- na.omit(df$distance_km[df$session_type == "practice"])
+
+qqnorm(dist_game,     main = "QQ-plot — Game",     col = "#E74C3C", pch = 1)
+qqline(dist_game,     col  = "#C0392B", lwd = 2)
+
+qqnorm(dist_practice, main = "QQ-plot — Practice", col = "#3498DB", pch = 1)
+qqline(dist_practice, col  = "#2980B9", lwd = 2)
+
+par(mfrow = c(1, 1))
+```
+
+The QQ-plots show departures from normality (heavy tails),
+which justifies the use of non-parametric tests below.
+
+---
+
+# Statistical analysis
+
+## Shapiro–Wilk normality test
+
+```{r shapiro}
+# Limit to 5000 obs (Shapiro requirement)
+set.seed(42)
+sw_game <- shapiro.test(sample(dist_game, min(length(dist_game), 5000)))
+sw_prac <- shapiro.test(sample(dist_practice, min(length(dist_practice), 5000)))
+
+tibble(
+  group   = c("game", "practice"),
+  W       = c(sw_game$statistic, sw_prac$statistic),
+  p_value = c(sw_game$p.value,   sw_prac$p.value)
+) |>
+  mutate(normal = if_else(p_value > 0.05, "yes", "no")) |>
+  kable(digits   = 4,
+        caption  = "Shapiro–Wilk test (H0: data are normally distributed)") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = FALSE)
+```
+
+Both distributions are **non-normal** (p < 0.05). We therefore use
+the **Wilcoxon rank-sum test** (equivalent to Mann–Whitney U).
+
+## Wilcoxon test: game vs practice
+
+```{r wilcoxon-distance}
+wt <- wilcox.test(distance_km ~ session_type, data = df, conf.int = TRUE)
+
+# Effect size (r = Z / sqrt(N))
+wt_es <- df |>
+  wilcox_effsize(distance_km ~ session_type)
+
+tibble(
+  test      = "Wilcoxon rank-sum",
+  variable  = "distance_km",
+  W         = wt$statistic,
+  p_value   = wt$p.value,
+  CI_low    = wt$conf.int[1],
+  CI_high   = wt$conf.int[2],
+  r_effect  = wt_es$effsize,
+  magnitude = wt_es$magnitude
+) |>
+  kable(digits  = 4,
+        caption = "Wilcoxon test: distance game vs practice") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+```{r wilcoxon-multi}
+# Same test on HID and max_speed
+vars <- c("HID_km", "max_speed", "acc_3mss")
+
+results <- lapply(vars, function(v) {
+  d <- df |> filter(!is.na(.data[[v]]))
+  wt <- wilcox.test(as.formula(paste(v, "~ session_type")), data = d)
+  es <- d |> wilcox_effsize(as.formula(paste(v, "~ session_type")))
+  tibble(variable  = v,
+         W         = wt$statistic,
+         p_value   = wt$p.value,
+         r_effect  = es$effsize,
+         magnitude = es$magnitude)
+}) |> bind_rows()
+
+results |>
+  mutate(p_adj = p.adjust(p_value, method = "BH")) |>
+  kable(digits = 4,
+        caption = "Wilcoxon tests — multiple KPIs (Benjamini–Hochberg correction)") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+## Kruskal–Wallis test: distance across positions
+
+```{r kruskal}
+df_pos <- df |> filter(position %in% valid_pos)
+
+kt <- kruskal.test(distance_km ~ position, data = df_pos)
+
+cat(sprintf("Kruskal-Wallis: H(%.0f) = %.2f, p = %.4f\n",
+            kt$parameter, kt$statistic, kt$p.value))
+```
+
+```{r dunn-posthoc}
+# Post-hoc Dunn test (Bonferroni correction)
+dunn <- df_pos |>
+  dunn_test(distance_km ~ position, p.adjust.method = "bonferroni") |>
+  filter(p.adj < 0.05) |>
+  arrange(p.adj)
+
+dunn |>
+  select(group1, group2, statistic, p, p.adj, p.adj.signif) |>
+  kable(digits = 4,
+        caption = "Post-hoc Dunn test — significant pairs only (α = 0.05)") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+---
+
+# Linear regression model
+
+## Model specification
+
+We model **distance** as a function of **max speed**, **HID**, and
+**session type**. This tests whether the intensity variables (speed,
+high-intensity distance) are predictive of total workload.
+
+```{r lm}
+df_model <- df |>
+  filter(!is.na(distance_km), !is.na(max_speed), !is.na(HID_km)) |>
+  mutate(session_type = factor(session_type, levels = c("practice", "game")))
+
+model <- lm(distance_km ~ max_speed + HID_km + session_type, data = df_model)
+
+summary(model)
+```
+
+```{r lm-tidy}
+# Clean coefficient table
+broom::tidy(model, conf.int = TRUE) |>
+  kable(digits = 3,
+        caption = "Linear model coefficients") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+## Residuals diagnostics
+
+```{r diagnostics, fig.height=8}
+par(mfrow = c(2, 2))
+plot(model, which = 1:4, col = alpha("#2C3E50", 0.4), pch = 1)
+par(mfrow = c(1, 1))
+```
+
+```{r residuals-hist, fig.height=4}
+tibble(residuals = residuals(model)) |>
+  ggplot(aes(x = residuals)) +
+  geom_histogram(bins = 50, fill = "#3498DB", colour = "white", alpha = 0.8) +
+  geom_vline(xintercept = 0, colour = "#E74C3C", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of residuals", x = "Residual", y = "Count") +
+  theme_minimal(base_size = 13)
+```
+
+## Interpretation
+
+```{r model-stats}
+r2   <- summary(model)$r.squared
+r2a  <- summary(model)$adj.r.squared
+rmse <- sqrt(mean(residuals(model)^2))
+
+cat(sprintf("R²         = %.3f\n", r2))
+cat(sprintf("Adjusted R² = %.3f\n", r2a))
+cat(sprintf("RMSE        = %.3f km\n", rmse))
+```
+
+---
+
+# Outlier detection
+
+We flag sessions where the distance deviates more than **2 standard
+deviations** from the mean **for that position × session type** group.
+This is a simple and operational rule for a coaching staff.
+
+```{r outliers}
+df_flagged <- df |>
+  group_by(session_type, position) |>
+  mutate(
+    group_mean = mean(distance_km, na.rm = TRUE),
+    group_sd   = sd(distance_km,   na.rm = TRUE),
+    z_score    = (distance_km - group_mean) / group_sd,
+    flag       = abs(z_score) > 2
+  ) |>
+  ungroup()
+
+outliers <- df_flagged |>
+  filter(flag) |>
+  arrange(desc(abs(z_score))) |>
+  select(session_date, session_type, position, sensor,
+         distance_km, z_score) |>
+  head(20)
+
+outliers |>
+  kable(digits = 2,
+        caption = "Top 20 flagged sessions (|z| > 2 within position × type)") |>
+  kable_styling(bootstrap_options = c("striped", "condensed"))
+```
+
+```{r outlier-plot, fig.height=5}
+df_flagged |>
+  filter(position %in% valid_pos) |>
+  ggplot(aes(x = session_date, y = distance_km, colour = flag)) +
+  geom_point(aes(size = flag), alpha = 0.6) +
+  scale_colour_manual(values = c("FALSE" = "#95A5A6", "TRUE" = "#E74C3C"),
+                      labels = c("Normal", "Outlier (|z| > 2)")) +
+  scale_size_manual(values = c("FALSE" = 0.8, "TRUE" = 2.5), guide = "none") +
+  facet_wrap(~ session_type, ncol = 1) +
+  labs(
+    title  = "Flagged sessions over time",
+    x      = NULL,
+    y      = "Distance (km)",
+    colour = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+---
+
+# Summary and discussion
+
+```{r summary-table}
+df |>
+  group_by(session_type, position) |>
+  summarise(
+    n            = n(),
+    dist_median  = median(distance_km, na.rm = TRUE),
+    HID_median   = median(HID_km,      na.rm = TRUE),
+    vmax_median  = median(max_speed,   na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  filter(n >= 10) |>
+  arrange(session_type, desc(dist_median)) |>
+  kable(digits = 2,
+        caption = "Dashboard: median KPIs by session type and position (n ≥ 10)") |>
+  kable_styling(bootstrap_options = c("striped", "condensed", "hover")) |>
+  pack_rows("Game", 1, sum(df |> filter(session_type=="game",
+             position %in% (df |> count(session_type, position) |>
+             filter(n >= 10) |> pull(position))) |>
+             distinct(position) |> nrow())) |>
+  row_spec(0, bold = TRUE)
+```
+
+## Main findings
+
+**1. Game vs practice load (Wilcoxon test)**  
+The total distance in matches is significantly higher than in training
+(large effect size). The same pattern holds for HID and max speed,
+confirming that GPS data correctly captures the difference in
+intensity between competition and training contexts.
+
+**2. Position-specific differences (Kruskal–Wallis + Dunn)**  
+Load differs significantly across positions. Wide players and
+midfielders cover the greatest distances, while goalkeepers show
+distinctly lower values — as expected biomechanically.
+
+**3. Linear model (R² ≈ `r round(summary(model)$r.squared, 2)`)**  
+Max speed and HID explain a large portion of the variance in total
+distance. Session type adds independent predictive power.
+The residuals diagnostics show mild heteroscedasticity at high
+predicted values, suggesting the model could be improved with a
+log-transformation or by stratifying by position.
+
+**4. Outlier detection**  
+The z-score approach identified sessions with anomalous loads. Before
+using these alerts operationally, each flagged session should be
+cross-checked against context (injury return, overload week, sensor
+error).
+
+## Limitations and perspectives
+
+- The quality rules (thresholds) were calibrated on reasonable domain
+  knowledge; a more rigorous approach would use cross-validation or
+  external validation data.  
+- The linear model assumes independence of observations; mixed-effects
+  models accounting for repeated measures per player would be more
+  appropriate.  
+- Tracking raw data (position/speed time series) could enable
+  intra-session analyses (e.g., fatigue in the second half) not
+  accessible from the aggregated summary.
+
+---
+
+# Session info
+
+```{r session-info}
+sessionInfo()
+```
