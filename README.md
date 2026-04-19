@@ -1,4 +1,4 @@
-# Football Performance Monitoring (GPS/IMU) — Python + R
+# Football Performance Monitoring (GPS/IMU)
 
 Master 2SIA — Python/R/Git project
 
