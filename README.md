@@ -1,7 +1,7 @@
 # Football Performance Monitoring
 
 **Master Sport, Health and Artificial Intelligence — M1 2SIA**  
-Université de Montpellier · Course: *Python-R-Git* · Supervisor: Denis MOTTET  
+University Of Montpellier · Course: *Python-R-Git* · Supervisor: Denis MOTTET  
 Student: Celine BENDEKOUM · 2025–2026
 
 ---
@@ -26,16 +26,18 @@ The pipeline ingests raw GPS data, stores it in a SQL database, applies quality 
 Football_Analysis/
 │
 ├── data/
-│   └── data/
 │       ├── summary.csv             # Aggregated player × session KPIs (main data source)
-│       └── <raw tracking files>/   # Per-sensor time series (position, speed)
+│       └── <overall_practice.pdf
+|       └──<overall_game.pdf   
 │
 ├── results/
-│   └── figures/                    # Exported charts and visualisations
+│   └── Images
+│   └── Images_R                  # Exported charts and visualisations
+│      
 │
-├── notebooks/
-│   └── Footballproject.ipynb       # Original exploration notebook
-│
+├── sources/
+│   └── Sources.pdf               # Enumerating all sources and LLM assitance used
+│   
 ├── main.ipynb                      # Python entry point — run this first
 ├── main.Rmd                        # R entry point — knit after main.ipynb
 ├── main.Rproj                      # RStudio project file
@@ -44,8 +46,6 @@ Football_Analysis/
 ├── README.md                       # This file
 └── LICENCE                         # GPLv3
 ```
-
-> `football.duckdb` and `*.wal` are generated locally by `main.ipynb` and are excluded from Git via `.gitignore`.
 
 ---
 
