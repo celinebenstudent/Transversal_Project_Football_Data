@@ -599,9 +599,3 @@ error).
   accessible from the aggregated summary.
 
 ---
-
-# Session info
-
-```{r session-info}
-sessionInfo()
-```
